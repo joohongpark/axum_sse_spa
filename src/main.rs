@@ -1,6 +1,6 @@
 use axum::{
-    body::Body,
-    extract,
+    body::{self, Body},
+    extract::{self, Path},
     http::StatusCode,
     response::{
         sse::{Event, Sse},
@@ -10,6 +10,7 @@ use axum::{
     Router,
 };
 use futures::stream::{self, Stream};
+use mime_guess::from_path;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, process, time::Duration};
@@ -27,7 +28,8 @@ struct Data {
 #[tokio::main]
 async fn main() {
     let app = Router::new()
-        .route("/", get(main_page_handler))
+        .route("/", get(serve_index))
+        .route("/assets/{*file}", get(serve_file))
         .route("/sse", get(sse_handler))
         .route("/time", post(set_time_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:7777").await.unwrap();
@@ -37,6 +39,11 @@ async fn main() {
         listener.local_addr().unwrap(),
     );
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn serve_index() -> Result<Response<Body>, (StatusCode, String)> {
+    // serve_file 함수를 호출할 때 index.html 경로를 직접 하드코딩합니다.
+    serve_file(Path("index.html".to_string())).await
 }
 
 async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -52,15 +59,24 @@ async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     )
 }
 
-async fn main_page_handler() -> Result<Response, (StatusCode, &'static str)> {
-    // TODO: asset 경로 및 파일 설정 필요
-    let body = Asset::get("index.html").unwrap();
-    let response = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/html")
-        .body(Body::from(body.data))
-        .unwrap();
-    return Ok(response.into_response());
+// 요청 경로에 해당하는 파일을 찾아 응답합니다.
+async fn serve_file(Path(filename): Path<String>) -> Result<Response<Body>, (StatusCode, String)> {
+    // 임베딩된 파일을 검색합니다.
+    match Asset::get(&filename) {
+        Some(content) => {
+            // mime 타입 추론
+            let mime_type = from_path(&filename).first_or_octet_stream();
+            // 파일 데이터를 응답 바디로 변환
+            let body = Body::from(content.data);
+            // let body = body::boxed(axum::body::Full::from(content.data));
+            let response = Response::builder()
+                .header("Content-Type", mime_type.to_string())
+                .body(body)
+                .unwrap();
+            Ok(response)
+        }
+        None => Err((StatusCode::NOT_FOUND, format!("Not Found: {}", filename))),
+    }
 }
 
 async fn set_time_handler(
