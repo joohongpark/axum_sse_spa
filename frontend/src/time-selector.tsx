@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// 요일 배열 (원하는 순서대로)
+// 월 ~ 일 00:00 ~ 23:59 까지, 15분 단위의 시간표 타입
 const DAYS = {
-    // 월 ~ 일 00:00 ~ 23:59 까지, 15분 단위의 시간표 타입
     monday: '월',
     tuesday: '화',
     wednesday: '수',
@@ -28,8 +27,8 @@ const getColorForUuid = (uuid: string) => {
         '#bdb2ff',
         '#ffc6ff',
     ];
-    // uuid의 첫번째 문자의 아스키 코드를 기반으로 색상을 선택
-    const charCode = uuid.charCodeAt(0);
+    // uuid의 첫번째 문자 + 두번째 문자의 아스키 코드를 기반으로 색상을 선택
+    const charCode = uuid.charCodeAt(0) + uuid.charCodeAt(1);
     return predefinedColors[charCode % predefinedColors.length];
 };
 
@@ -84,25 +83,20 @@ const sendData = async (data) => {
     });
 };
 
-// sse
-const sse = async (uuid) => {
-    // const url = `./sse/${uuid}`;
+const sseCallback = (uuid, callback) => {
     const url = `http://localhost:7777/sse/${uuid}`;
-    return await fetch(url, {
-        method: 'GET',
-        mode: 'cors',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-    });
+    const event = new EventSource(url);
+    event.onmessage = (e) => {
+        callback(e.data);
+    };
 };
-
 
 // uuid를 로컬스토리지에 저장 (이미 있으면 유지)
 const uuid = localStorage.getItem('uuid') || crypto.randomUUID();
 
 const TimeSelector = () => {
     const initialSchedules = {};
+    const containerRef = useRef(null);
 
     Object.keys(DAYS).forEach(day => {
         initialSchedules[uuid] = initialSchedules[uuid] || {};
@@ -112,16 +106,17 @@ const TimeSelector = () => {
 
     /**
      * 드래그 상태를 저장하는 state
-     * dragState: { day, startIndex, initialValue, snapshot }
+     * dragState: { day, startIndex, initialValue }
      * - day: 드래그 중인 요일(컬럼)
      * - startIndex: 드래그 시작 셀의 인덱스
      * - initialValue: 시작 셀의 기존 선택값 (true 또는 false)
-     * - snapshot: 드래그 시작 전 해당 요일의 전체 셀 상태(복사본)
      */
     const [dragState, setDragState] = useState(null);
-    const containerRef = useRef(null);
 
+    // 시간표 참여자 고유 uuid 목록
     const [uuids, setUuids] = useState([uuid]);
+    // 서버에서 받아온 시간표 정보를 저장하는 state
+    const [serverSchedules, setServerSchedules] = useState({});
 
     // 마우스 다운 시 시작 셀 정보 저장
     const handleMouseDown = (day: string, index: number) => (e) => {
@@ -228,74 +223,31 @@ const TimeSelector = () => {
     }, [dragState]);
 
     useEffect(() => {
-        setUuids([uuid]);
-        const event = sse(uuid);
-
-        // fetch 요청으로 SSE 스트림을 받아옴
-        event
-            .then((response) => {
-                const reader = response.body!.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let buffer = "";
-
-                // 스트림을 계속 읽어들이는 재귀 함수
-                const read = () => {
-                    reader.read().then(({ done, value }) => {
-                        if (done) {
-                            console.log("스트림이 종료되었습니다.");
-                            return;
-                        }
-
-                        // 받은 데이터를 텍스트로 디코딩하고 버퍼에 추가
-                        buffer += decoder.decode(value, { stream: true });
-
-                        // 이벤트는 보통 두 개의 개행(\n\n)으로 구분됨
-                        const parts = buffer.split("\n\n");
-                        // 마지막 부분은 불완전한 데이터일 수 있으므로 다시 버퍼에 저장
-                        buffer = parts.pop()!;
-
-                        parts.forEach((part) => {
-                            // 각 이벤트의 각 줄을 처리
-                            part.split("\n").forEach((line) => {
-                                // data: 로 시작하는 줄을 JSON 파싱하여 처리
-                                if (line.startsWith("data:")) {
-                                    try {
-                                        const data = line.substring(5).trim();
-                                        if (data === "") return;
-                                        const serverSchedules = data.split("|").map((str) => {
-                                            const [uuid, grid] = str.split(":");
-                                            return { uuid, grid: stringToGrid(grid) };
-                                        }).reduce((acc, { uuid, grid }) => {
-                                            acc[uuid] = grid;
-                                            return acc;
-                                        }, {});
-
-                                        const newSchedules = { ...schedules };
-                                        Object.keys(serverSchedules).forEach((uuid) => {
-                                            newSchedules[uuid] = serverSchedules[uuid];
-                                        });
-                                        console.log({ schedules, serverSchedules, newSchedules });
-                                        setSchedules(newSchedules);
-                                        setUuids(Object.keys(newSchedules));
-                                        // setGrid(grid);
-                                    } catch (e) {
-                                        console.error("파싱 에러:", e);
-                                    }
-                                }
-                            });
-                        });
-
-                        // 다음 청크를 계속 읽음
-                        read();
-                    });
-                };
-
-                read();
-            })
-            .catch((error) => {
-                console.error("Fetch 에러:", error);
+        sseCallback(uuid, (data: string) => {
+            const serverSchedules = data.split("|").map((str) => {
+                const [uuid, grid] = str.split(":");
+                return { uuid, grid: stringToGrid(grid) };
+            }).reduce((acc, { uuid, grid }) => {
+                acc[uuid] = grid;
+                return acc;
+            }, {});
+            const newSchedules = {};
+            Object.keys(serverSchedules).forEach((uuid) => {
+                newSchedules[uuid] = serverSchedules[uuid];
             });
+            setServerSchedules(newSchedules);
+        });
     }, []);
+
+    useEffect(() => {
+        const uuids = [uuid, ...Object.keys(serverSchedules)];
+        setUuids(uuids);
+        const newSchedules = { ...schedules };
+        uuids.forEach(uuid => {
+            newSchedules[uuid] = serverSchedules[uuid] || newSchedules[uuid] || {};
+        });
+        setSchedules(newSchedules);
+    }, [serverSchedules]);
 
     useEffect(() => {
         if (!dragState) return;

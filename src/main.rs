@@ -74,7 +74,13 @@ async fn sse_handler(
         })
         .collect::<Vec<_>>()
         .join("|");
-    let initial = stream::once(async { Ok::<Event, Infallible>(Event::default().data(once_msg)) });
+    let initial = stream::once(async {
+        Ok::<Event, Infallible>(if once_msg.is_empty() {
+            Event::default()
+        } else {
+            Event::default().data(once_msg)
+        })
+    });
 
     let rx = tx.subscribe();
     let events = stream::unfold(
@@ -96,8 +102,15 @@ async fn sse_handler(
                         })
                         .collect::<Vec<_>>()
                         .join("|");
-                    let event = Event::default().data(msg);
-                    Some((Ok(event), (rx, state, user_id)))
+                    let empty = msg.is_empty();
+                    // 만약 empty가 true이면 이벤트를 생성하지 않음
+                    if empty {
+                        Some((Ok(Event::default()), (rx, state, user_id)))
+                    } else {
+                        Some((Ok(Event::default().data(msg)), (rx, state, user_id)))
+                    }
+                    // let event = Event::default().data(msg);
+                    // Some((Ok(event), (rx, state, user_id)))
                 }
                 // Err(broadcast::error::RecvError::Lagged(_)) => {
                 //     // Lagged 경우에도 계속 진행하도록 처리할 수 있음
